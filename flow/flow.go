@@ -196,6 +196,12 @@ func FlowsFromGoPacket(ft *Table, packet *gopacket.Packet, length int64, setter 
 
 		switch layerType {
 		case layers.LayerTypeGRE, layers.LayerTypeVXLAN, layers.LayerTypeMPLS:
+			// If the next layer type is MPLS, we don't
+			// create the tunneling packet at this level,
+			// but at the next one.
+			if i < len(packetLayers)-2 && packetLayers[i+1].LayerType() == layers.LayerTypeMPLS {
+				continue
+			}
 			p := gopacket.NewPacket(packetData[start:start+innerLen], firstLayer.LayerType(), gopacket.NoCopy)
 			packetsFlows = append(packetsFlows, &p)
 			start = start + innerLen

@@ -100,6 +100,16 @@ func TestFlowEncaspulationMplsUdp(t *testing.T) {
 	}
 }
 
+func TestFlowEncaspulationMplsGRE(t *testing.T) {
+	table := NewTable(nil, nil)
+	packet := forgeTestPacket(t, 64, false, ETH, IPv4, GRE, MPLS, IPv4, TCP)
+	FlowsFromGoPacket(table, packet, 0, nil)
+	flows := table.GetFlows(nil).GetFlows()
+	if len(flows) != 2 {
+		t.Error("An MPLSoGRE packet must generate 2 flows")
+	}
+}
+
 func TestFlowJSON(t *testing.T) {
 	f := Flow{
 		UUID:       "uuid-1",
