@@ -54,19 +54,35 @@ var Node = function(ID) {
   this.Host = '';
   this.Metadata = {};
   this.Edges = {};
-  this.Visible = true;
   this.Collapsed = false;
   this.Highlighted = false;
   this.Group = '';
 };
 
-Node.prototype.IsCaptureOn = function() {
-  return "State/FlowCapture" in this.Metadata && this.Metadata["State/FlowCapture"] == "ON";
-};
+Node.prototype = {
+  
+  IsCaptureOn: function() {
+    return "State/FlowCapture" in this.Metadata && this.Metadata["State/FlowCapture"] == "ON";
+  },
 
-Node.prototype.IsCaptureAllowed = function() {
-  var allowedTypes = ["device", "veth", "ovsbridge", "internal", "tun", "bridge"];
-  return allowedTypes.indexOf(this.Metadata.Type) >= 0;
+  IsCaptureAllowed: function() {
+    var allowedTypes = ["device", "veth", "ovsbridge", "internal", "tun", "bridge"];
+    return allowedTypes.indexOf(this.Metadata.Type) >= 0;
+  },
+
+  _visible: true,
+
+  set Visible(bool) {
+    this._visible = bool;
+    for (var i in this.Edges) {
+      this.Edges[i].UpdateVisibility();
+    }
+  },
+
+  get Visible() {
+    return this._visible;
+  }
+
 };
 
 var Edge = function(ID) {
@@ -75,7 +91,28 @@ var Edge = function(ID) {
   this.Parent = '';
   this.Child = '';
   this.Metadata = {};
-  this.Visible = true;
+};
+
+Edge.prototype = {
+
+  _visible: true,
+
+  get Visible() {
+    // comment to see ownership links
+    if (this.Metadata.RelationType == "ownership")
+      return false;
+    return this._visible;
+  },
+
+  set Visible(bool) {
+    this._visible = bool;
+  },
+
+  // show edge if both nodes are visible
+  UpdateVisibility: function() {
+    this.Visible = this.Child.Visible && this.Parent.Visible;
+  }
+
 };
 
 var Graph = function(ID) {
@@ -136,12 +173,13 @@ Graph.prototype.GetEdge = function(ID) {
   return this.Edges[ID];
 };
 
-Graph.prototype.NewEdge = function(ID, parent, child, host) {
+Graph.prototype.NewEdge = function(ID, parent, child, host, metadata) {
   var edge = new Edge(ID);
   edge.Parent = parent;
   edge.Child = child;
   edge.Graph = this;
   edge.Host = host;
+  edge.Metadata = metadata || {};
 
   this.Edges[ID] = edge;
 
@@ -184,11 +222,8 @@ Graph.prototype.InitFromSyncMessage = function(msg) {
     var parent = this.GetNode(e.Parent);
     var child = this.GetNode(e.Child);
 
-    var edge = this.NewEdge(e.ID, parent, child);
-
-    if ("Metadata" in e)
-      edge.Metadata = e.Metadata;
-    edge.Host = e.Host;
+    var edge = this.NewEdge(e.ID, parent, child, e.host,
+                            e.Metadata || {});
   }
 };
 
@@ -442,6 +477,9 @@ Layout.prototype.AddNode = function(node) {
   if (node.ID in this.elements)
     return;
 
+  node = this.ApplyFiltersNode(node);
+  this.AddMetadata(node.Metadata);
+
   this.elements[node.ID] = node;
 
   // distribute node on a circle depending on the host
@@ -456,6 +494,9 @@ Layout.prototype.AddNode = function(node) {
 
 Layout.prototype.UpdateNode = function(node, metadata) {
   node.Metadata = metadata;
+  
+  node = this.ApplyFiltersNode(node);
+  this.AddMetadata(node.Metadata);
 
   if (typeof CurrentNodeDetails != "undefined" && node.ID == CurrentNodeDetails.ID)
     this.NodeDetails(node);
@@ -891,10 +932,158 @@ Layout.prototype.CollapseNode = function(d) {
   this.Redraw();
 };
 
+// default filters
+Layout.prototype.filters = {
+  State: ['UP']
+};
+
+// Metadata key/values will be recorded
+// on node add/update
+Layout.prototype.metadatas = {};
+
+Layout.prototype.SetupFilters = function() {
+
+  var _this = this;
+
+  $('#filter-add-form input[name="filter"]').typeahead({
+    source: function(query, process) {
+      process(_this.ListMetadatas());
+    }
+  });
+  
+  $('#filter-add-form input[name="value"]').typeahead({
+    source: function(query, process) {
+      var filter = $('#filter-add-form input[name="filter"]').val();
+      process(Array.from(_this.metadatas[filter]));
+    }
+  });
+
+  $('#filter-add-form').submit(function(e) {
+    var filter = $('#filter-add-form input[name="filter"]'),
+        value = $('#filter-add-form input[name="value"]');
+    _this.AddFilter(filter.val(), value.val());
+    filter.val('');
+    value.val('');
+    e.preventDefault();
+  });
+
+  this.UpdateFilters();
+
+};
+
+Layout.prototype.AddMetadata = function(metadata) {
+  for (var m in metadata) {
+    if (this.metadatas[m])
+      this.metadatas[m].add(metadata[m]);
+    else
+      this.metadatas[m] = new Set([metadata[m]]);
+  }
+};
+
+Layout.prototype.ListMetadatas = function() {
+  return Object.keys(this.metadatas);
+};
+
+Layout.prototype.AddFilter = function(filter, value) {
+  if (!this.filters[filter]) {
+    this.filters[filter] = [value];
+  } else {
+    this.filters[filter].push(value);
+  }
+  this.UpdateFilters();
+  this.ApplyFilters();
+};
+
+Layout.prototype.RemoveFilter = function(filter, value) {
+  if (!this.filters[filter]) {
+    return;
+  }
+  var idx = this.filters[filter].indexOf(value);
+  if (idx !== -1) {
+    this.filters[filter].splice(idx, 1);
+  }
+  if (this.filters[filter].length === 0) {
+    delete this.filters[filter];
+  }
+  this.UpdateFilters();
+  this.ApplyFilters();
+};
+
+Layout.prototype.UpdateFilters = function() {
+
+  var _this = this;
+
+  function _buildFilterHtml(filter, value) {
+    var group = $('<div />', {
+      role: "group",
+      class: "btn-group",
+    });
+    var removeBtn = $('<button />', {
+      type: "button",
+      class: "btn btn-danger btn-sm",
+      click: function() {
+        _this.RemoveFilter(filter, value);
+      }
+    });
+    var removeIcn = $('<span />', {
+      class: 'glyphicon glyphicon-remove'
+    });
+    var filterBtn = $('<button />', {
+      type: "button",
+      class: "btn btn-default btn-sm",
+      text: filter + ': ' + value,
+      readonly: "readonly"
+    });
+
+    removeBtn.append(removeIcn);
+    group.append(filterBtn).append(removeBtn);
+    return group;
+  }
+
+  function _addFilter(filter, value) {
+      $('#filter-list').append(_buildFilterHtml(filter, value));
+  }
+
+  $('#filter-list').empty();
+ 
+  for (var f in this.filters) {
+    for (var i in this.filters[f]) {
+      _addFilter(f, this.filters[f][i]);
+    }
+  }
+
+};
+
+Layout.prototype.ApplyFiltersNode = function(node) {
+  var match = [];
+  for (var filter in this.filters) {
+    if (!node.Metadata[filter]) {
+      match.push(true);
+    } else {
+      match.push(this.filters[filter].indexOf(node.Metadata[filter]) !== -1);
+    }
+  }
+  var visible = match.every(function(e) { return e === true; });
+
+  node.Visible = visible;
+  return node;
+};
+
+Layout.prototype.ApplyFilters = function() {
+  var _this = this;
+  this.nodes.map(function(n) {
+    _this.ApplyFiltersNode(n);
+  });
+  this.Redraw();
+};
+
 Layout.prototype.Redraw = function() {
   var _this = this;
 
-  this.link = this.link.data(this.links, function(d) { return d.source.ID + "-" + d.target.ID; });
+  this.link = this.link.data(
+    this.links.filter(function(l) { return l.edge.Visible; }), 
+    function(d) { return d.source.ID + "-" + d.target.ID; }
+  );
   this.link.exit().remove();
 
   this.link.enter().append("path")
@@ -906,18 +1095,18 @@ Layout.prototype.Redraw = function() {
       return _this.EdgeClass(d);
     });
 
-  this.node = this.node.data(this.nodes, function(d) { return d.ID; })
-    .attr("id", function(d) { return "node-" + d.ID; })
-    .attr("class", function(d) {
-      return _this.NodeClass(d);
-    })
-    .style("display", function(d) {
-      return !d.Visible ? "none" : "block";
-    });
+  this.node = this.node.data(
+    this.nodes.filter(function(e) { return e.Visible; }),
+    function(d) { return d.ID; }
+  );
   this.node.exit().remove();
 
   var nodeEnter = this.node.enter().append("g")
+    .attr("id", function(d) { return "node-" + d.ID; })
     .attr("class", "node")
+    .attr("class", function(d) {
+      return _this.NodeClass(d);
+    })
     .on("click", function(d) {
       // node selection callback registered, so in selection mode
       if (nodeSelectedCallback) {
@@ -1107,9 +1296,8 @@ Layout.prototype.ProcessGraphMessage = function(msg) {
       var parent = this.graph.GetNode(msg.Obj.Parent);
       var child = this.graph.GetNode(msg.Obj.Child);
 
-      edge = this.graph.NewEdge(msg.Obj.ID, parent, child, msg.Obj.Host);
-      if ("Metadata" in msg.Obj)
-        edge.Metadata = msg.Obj.Metadata;
+      edge = this.graph.NewEdge(msg.Obj.ID, parent, child,
+                                msg.Obj.Host, msg.Obj.Metadata || {});
 
       this.AddEdge(edge);
       break;
@@ -1317,6 +1505,10 @@ function SetupCaptureOptions() {
       $('#capture-gremlin').show();
       $('#capture-selection').hide();
     }
+    else if (this.value == 'filter') {
+      $('#capture-gremlin').hide();
+      $('#capture-selection').hide();
+    }
   });
 
   $('.capture-node').focusin(function() {
@@ -1363,7 +1555,8 @@ function SetupCaptureList() {
     var mode = $('input[type=radio][name=capture-target]:checked').val();
     if (mode == "gremlin") {
       query = $("#capture-query").val();
-    } else {
+    } 
+    else if (mode == "selection") {
       var node1 = $('#capture-node1').val();
       if (node1 === "") {
         alert("At least one node have to be selected");
@@ -1375,6 +1568,14 @@ function SetupCaptureList() {
         query = "G.V().Has('TID', '" + node1 + "').ShortestPathTo(Metadata('TID', '" + node2 + "'), Metadata('RelationType', 'layer2'))";
       } else {
         query = "G.V().Has('TID', '" + node1 + "')";
+      }
+    }
+    else if (mode == "filter") {
+      query = "G.V()";
+      for (var f in topologyLayout.filters) {
+        for (var i in topologyLayout.filters[f]) {
+          query += '.Has("'+ f +'", "'+ topologyLayout.filters[f][i] +'")';
+        }
       }
     }
 
@@ -1563,6 +1764,7 @@ $(document).ready(function() {
 
   topologyLayout = new Layout(".topology-d3");
   topologyLayout.StartLiveUpdate();
+  topologyLayout.SetupFilters();
 
   StartCheckAPIAccess();
 
