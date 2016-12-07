@@ -40,6 +40,7 @@
   <script src="statics/js/components/filter-list.js"></script>
   <script src="statics/js/components/autocomplete.js"></script>
   <script src="statics/js/vue-topology.js"></script>
+  <script src="statics/js/vue-sidebar.js"></script>
 
   <script>
     // define here globals with values from agent/analyzers
@@ -80,8 +81,8 @@
       </div>
     </div>
   </div>
-  <div class="topology" id="vue-topology">
-    <div class="col-sm-8 fill content">
+  <div class="topology">
+    <div class="col-sm-8 fill content" id="vue-topology">
       <div class="main-toolbar analyzer-only">
         <div class="timeslider">
           <div>
@@ -100,7 +101,7 @@
       <!-- tabindex makes the div focusable so event handlers can be attached -->
       <div class="topology-d3" tabindex="0"></div>
     </div>
-    <div class="col-sm-4 fill info">
+    <div class="col-sm-4 fill info" id="vue-sidebar">
       <div class="flow-ops-panel analyzer-only">
         <ul class="nav nav-pills">
           <li class="active">
@@ -207,6 +208,11 @@
               </div>
             </div>
             <div style="clear: both">
+              <filter-list ref="flowFilters"
+                           @update="applyFlowFilters"
+                           :key-suggestions="flowFiltersKeys"
+                           :value-suggestions="flowFiltersValues">
+              </filter-list>
               <div id="flowgrid"></div>
             </div>
           </div>

@@ -436,7 +436,14 @@ function LayersPathToProtocol(layers) {
 }
 
 function ShowNodeFlows(node) {
-  var query = "G.V('" + node.ID + "').Flows().Sort().Dedup().Limit(20)";
+  var query = "G.V('" + node.ID + "').Flows()";
+  if (vueSidebar.$refs && vueSidebar.$refs.flowFilters) {
+    for (var f of vueSidebar.$refs.flowFilters.filterList) {
+      query += ".Has('"+f.label+"', '"+f.value+"')";
+    }
+  }
+  query += ".Sort().Dedup().Limit(20)";
+
   $.ajax({
     dataType: "json",
     url: '/api/topology',
@@ -1820,6 +1827,7 @@ $(document).ready(function() {
   $('.discovery').hide();
   
   vueTopology = new Vue(VueTopology);
+  vueSidebar = new Vue(VueSidebar);
 
   topologyLayout = new Layout(".topology-d3");
   topologyLayout.StartLiveUpdate();
